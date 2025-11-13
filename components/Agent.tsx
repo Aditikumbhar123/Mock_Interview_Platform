@@ -21,6 +21,16 @@ interface SavedMessage {
   content: string;
 }
 
+interface AgentProps {
+  userName: string;
+  userId: string;
+  interviewId?: string;
+  feedbackId?: string;
+  type: "generate" | "interview";
+  questions?: string[];
+  extractedSkills?: string; // ✅ added field for resume-based interview
+}
+
 const Agent = ({
   userName,
   userId,
@@ -28,6 +38,7 @@ const Agent = ({
   feedbackId,
   type,
   questions,
+  extractedSkills,
 }: AgentProps) => {
   const router = useRouter();
   const [callStatus, setCallStatus] = useState<CallStatus>(CallStatus.INACTIVE);
@@ -35,35 +46,19 @@ const Agent = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [lastMessage, setLastMessage] = useState<string>("");
 
+  // --- Handle Vapi Events ---
   useEffect(() => {
-    const onCallStart = () => {
-      setCallStatus(CallStatus.ACTIVE);
-    };
-
-    const onCallEnd = () => {
-      setCallStatus(CallStatus.FINISHED);
-    };
-
-    const onMessage = (message: Message) => {
+    const onCallStart = () => setCallStatus(CallStatus.ACTIVE);
+    const onCallEnd = () => setCallStatus(CallStatus.FINISHED);
+    const onMessage = (message: any) => {
       if (message.type === "transcript" && message.transcriptType === "final") {
         const newMessage = { role: message.role, content: message.transcript };
         setMessages((prev) => [...prev, newMessage]);
       }
     };
-
-    const onSpeechStart = () => {
-      console.log("speech start");
-      setIsSpeaking(true);
-    };
-
-    const onSpeechEnd = () => {
-      console.log("speech end");
-      setIsSpeaking(false);
-    };
-
-    const onError = (error: Error) => {
-      console.log("Error:", error);
-    };
+    const onSpeechStart = () => setIsSpeaking(true);
+    const onSpeechEnd = () => setIsSpeaking(false);
+    const onError = (error: Error) => console.error("Vapi Error:", error);
 
     vapi.on("call-start", onCallStart);
     vapi.on("call-end", onCallEnd);
@@ -82,14 +77,14 @@ const Agent = ({
     };
   }, []);
 
+  // --- Feedback Saving ---
   useEffect(() => {
     if (messages.length > 0) {
       setLastMessage(messages[messages.length - 1].content);
     }
 
     const handleGenerateFeedback = async (messages: SavedMessage[]) => {
-      console.log("handleGenerateFeedback");
-
+      console.log("Saving feedback...");
       const { success, feedbackId: id } = await createFeedback({
         interviewId: interviewId!,
         userId: userId!,
@@ -97,54 +92,78 @@ const Agent = ({
         feedbackId,
       });
 
-      if (success && id) {
-        router.push(`/interview/${interviewId}/feedback`);
-      } else {
-        console.log("Error saving feedback");
-        router.push("/");
-      }
+      if (success && id) router.push(`/interview/${interviewId}/feedback`);
+      else router.push("/");
     };
 
     if (callStatus === CallStatus.FINISHED) {
-      if (type === "generate") {
-        router.push("/");
-      } else {
-        handleGenerateFeedback(messages);
-      }
+      if (type === "generate") router.push("/");
+      else handleGenerateFeedback(messages);
     }
   }, [messages, callStatus, feedbackId, interviewId, router, type, userId]);
 
+  // --- Handle Interview Call ---
   const handleCall = async () => {
     setCallStatus(CallStatus.CONNECTING);
 
-    if (type === "generate") {
-      await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
-        variableValues: {
-          username: userName,
-          userid: userId,
-        },
-      });
-    } else {
-      let formattedQuestions = "";
-      if (questions) {
-        formattedQuestions = questions
-          .map((question) => `- ${question}`)
-          .join("\n");
-      }
+    try {
+      if (type === "generate") {
+        // ✅ Step 1: Generate Interview Questions Based on Extracted Skills
+        const res = await fetch("/api/vapi/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "technical",
+            role: "Software Engineer",
+            level: "mid",
+            techstack: extractedSkills || "general programming",
+            amount: 5,
+            userid: userId,
+            skills: extractedSkills,
+          }),
+        });
 
-      await vapi.start(interviewer, {
-        variableValues: {
-          questions: formattedQuestions,
-        },
-      });
+        const data = await res.json();
+
+        if (!data.success) {
+          console.error("Failed to generate interview:", data.error);
+          alert("⚠️ Could not generate interview questions. Try again.");
+          setCallStatus(CallStatus.INACTIVE);
+          return;
+        }
+
+        // ✅ Step 2: Start the AI Interview in Vapi Workflow
+        await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
+          variableValues: {
+            username: userName,
+            userid: userId,
+            skills: extractedSkills || "general programming",
+          },
+        });
+      } else {
+        // --- Predefined Questions Mode ---
+        const formattedQuestions = questions
+          ?.map((q) => `- ${q}`)
+          .join("\n") || "Tell me about yourself.";
+
+        await vapi.start(interviewer, {
+          variableValues: { questions: formattedQuestions },
+        });
+      }
+    } catch (error) {
+      console.error("Interview error:", error);
+      alert("Something went wrong while starting the interview.");
+      setCallStatus(CallStatus.INACTIVE);
     }
   };
 
+  // --- End Call ---
   const handleDisconnect = () => {
     setCallStatus(CallStatus.FINISHED);
     vapi.stop();
   };
 
+  // --- UI ---
   return (
     <>
       <div className="call-view">
@@ -153,7 +172,7 @@ const Agent = ({
           <div className="avatar">
             <Image
               src="/ai-avatar.png"
-              alt="profile-image"
+              alt="AI Interviewer"
               width={65}
               height={54}
               className="object-cover"
@@ -168,9 +187,9 @@ const Agent = ({
           <div className="card-content">
             <Image
               src="/user-avatar.png"
-              alt="profile-image"
-              width={539}
-              height={539}
+              alt="Candidate"
+              width={120}
+              height={120}
               className="rounded-full object-cover size-[120px]"
             />
             <h3>{userName}</h3>
@@ -178,6 +197,7 @@ const Agent = ({
         </div>
       </div>
 
+      {/* Live Transcript */}
       {messages.length > 0 && (
         <div className="transcript-border">
           <div className="transcript">
@@ -194,25 +214,25 @@ const Agent = ({
         </div>
       )}
 
-      <div className="w-full flex justify-center">
-        {callStatus !== "ACTIVE" ? (
-          <button className="relative btn-call" onClick={() => handleCall()}>
+      {/* Call Controls */}
+      <div className="w-full flex justify-center mt-4">
+        {callStatus !== CallStatus.ACTIVE ? (
+          <button className="relative btn-call" onClick={handleCall}>
             <span
               className={cn(
                 "absolute animate-ping rounded-full opacity-75",
                 callStatus !== "CONNECTING" && "hidden"
               )}
             />
-
             <span className="relative">
               {callStatus === "INACTIVE" || callStatus === "FINISHED"
-                ? "Call"
-                : ". . ."}
+                ? "Start Interview"
+                : "Connecting..."}
             </span>
           </button>
         ) : (
-          <button className="btn-disconnect" onClick={() => handleDisconnect()}>
-            End
+          <button className="btn-disconnect" onClick={handleDisconnect}>
+            End Interview
           </button>
         )}
       </div>

@@ -95,31 +95,41 @@ export async function getLatestInterviews(
 ): Promise<Interview[] | null> {
   const { userId, limit = 20 } = params;
 
-  const interviews = await db
+  // Get all finalized interviews (no orderBy)
+  const snapshot = await db
     .collection("interviews")
-    .orderBy("createdAt", "desc")
     .where("finalized", "==", true)
-    .where("userId", "!=", userId)
     .limit(limit)
     .get();
 
-  return interviews.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  })) as Interview[];
+  // Client-side filtering and sorting
+  const interviews = snapshot.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((interview: any) => interview.userId !== userId)
+    .sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+  return interviews as Interview[];
 }
+
+
 
 export async function getInterviewsByUserId(
   userId: string
 ): Promise<Interview[] | null> {
-  const interviews = await db
+  const snapshot = await db
     .collection("interviews")
     .where("userId", "==", userId)
-    .orderBy("createdAt", "desc")
     .get();
 
-  return interviews.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  })) as Interview[];
+  const interviews = snapshot.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .sort(
+      (a: any, b: any) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+  return interviews as Interview[];
 }
